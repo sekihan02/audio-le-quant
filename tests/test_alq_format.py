@@ -42,6 +42,23 @@ class AlqFormatTests(unittest.TestCase):
         self.assertEqual(loaded.codes, payload.codes)
         self.assertEqual(loaded.mu, 100)
 
+    def test_written_alq_header_has_expected_fields(self) -> None:
+        clip = generate_signal("sine", 440.0, 0.05, 8000)
+        payload = linear_quantize(clip, bit_depth=4)
+        handle = tempfile.NamedTemporaryFile(suffix=".alq", delete=False)
+        handle.close()
+        self.addCleanup(lambda: os.path.exists(handle.name) and os.remove(handle.name))
+
+        write_alq(handle.name, payload)
+        with open(handle.name, "rb") as input_file:
+            raw = input_file.read(20)
+
+        self.assertEqual(raw[0:4], b"ALQ1")
+        self.assertEqual(raw[4], 1)
+        self.assertEqual(raw[5], 1)
+        self.assertEqual(raw[6], 1)
+        self.assertEqual(raw[7], 4)
+
 
 if __name__ == "__main__":
     unittest.main()

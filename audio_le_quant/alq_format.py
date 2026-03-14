@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import struct
 from typing import List
 
 from .quantization import (
@@ -13,7 +12,23 @@ MAGIC = b"ALQ1"
 VERSION = 1
 CODEC_LINEAR = 1
 CODEC_MULAW = 2
-HEADER = struct.Struct("<4sBBBBIII")
+HEADER_SIZE = 20
+
+
+def _read_u32_le(buffer: bytes, offset: int) -> int:
+    return (
+        buffer[offset]
+        | (buffer[offset + 1] << 8)
+        | (buffer[offset + 2] << 16)
+        | (buffer[offset + 3] << 24)
+    )
+
+
+def _append_u32_le(buffer: bytearray, value: int) -> None:
+    buffer.append(value & 0xFF)
+    buffer.append((value >> 8) & 0xFF)
+    buffer.append((value >> 16) & 0xFF)
+    buffer.append((value >> 24) & 0xFF)
 
 
 def pack_bits(codes: List[int], bit_depth: int) -> bytes:
@@ -80,16 +95,15 @@ def write_alq(path: str, payload: QuantizedPayload) -> None:
     else:
         raise ValueError("unsupported codec: {0}".format(payload.codec))
 
-    header = HEADER.pack(
-        MAGIC,
-        VERSION,
-        codec_id,
-        payload.channels,
-        payload.bit_depth,
-        payload.sample_rate,
-        payload.frame_count,
-        payload.mu if payload.codec == "mulaw" else 0,
-    )
+    header = bytearray()
+    header.extend(MAGIC)
+    header.append(VERSION)
+    header.append(codec_id)
+    header.append(payload.channels)
+    header.append(payload.bit_depth)
+    _append_u32_le(header, payload.sample_rate)
+    _append_u32_le(header, payload.frame_count)
+    _append_u32_le(header, payload.mu if payload.codec == "mulaw" else 0)
 
     with open(path, "wb") as output_file:
         output_file.write(header)
@@ -100,19 +114,24 @@ def read_alq(path: str) -> QuantizedPayload:
     with open(path, "rb") as input_file:
         raw = input_file.read()
 
-    if len(raw) < HEADER.size:
+    if len(raw) < HEADER_SIZE:
         raise ValueError("ALQ ファイルとしては短すぎます")
 
-    magic, version, codec_id, channels, bit_depth, sample_rate, frame_count, parameter = HEADER.unpack(
-        raw[: HEADER.size]
-    )
+    magic = raw[0:4]
+    version = raw[4]
+    codec_id = raw[5]
+    channels = raw[6]
+    bit_depth = raw[7]
+    sample_rate = _read_u32_le(raw, 8)
+    frame_count = _read_u32_le(raw, 12)
+    parameter = _read_u32_le(raw, 16)
     if magic != MAGIC:
         raise ValueError("invalid ALQ magic header")
     if version != VERSION:
         raise ValueError("unsupported ALQ version")
 
     sample_count = channels * frame_count
-    body = raw[HEADER.size :]
+    body = raw[HEADER_SIZE:]
 
     if codec_id == CODEC_LINEAR:
         codes = unpack_bits(body, bit_depth, sample_count)

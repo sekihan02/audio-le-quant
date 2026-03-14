@@ -2,14 +2,50 @@ from __future__ import annotations
 
 import math
 import random
-import struct
-import wave
 from dataclasses import dataclass
 from typing import List
 
 
 def clamp_sample(value: float) -> float:
     return max(-1.0, min(1.0, value))
+
+
+def _read_u16_le(buffer: bytes, offset: int) -> int:
+    return buffer[offset] | (buffer[offset + 1] << 8)
+
+
+def _read_u32_le(buffer: bytes, offset: int) -> int:
+    return (
+        buffer[offset]
+        | (buffer[offset + 1] << 8)
+        | (buffer[offset + 2] << 16)
+        | (buffer[offset + 3] << 24)
+    )
+
+
+def _append_u16_le(buffer: bytearray, value: int) -> None:
+    buffer.append(value & 0xFF)
+    buffer.append((value >> 8) & 0xFF)
+
+
+def _append_u32_le(buffer: bytearray, value: int) -> None:
+    buffer.append(value & 0xFF)
+    buffer.append((value >> 8) & 0xFF)
+    buffer.append((value >> 16) & 0xFF)
+    buffer.append((value >> 24) & 0xFF)
+
+
+def _read_i16_le(buffer: bytes, offset: int) -> int:
+    value = _read_u16_le(buffer, offset)
+    if value >= 0x8000:
+        value -= 0x10000
+    return value
+
+
+def _append_i16_le(buffer: bytearray, value: int) -> None:
+    if value < 0:
+        value += 0x10000
+    _append_u16_le(buffer, value)
 
 
 @dataclass
@@ -87,27 +123,72 @@ def generate_signal(
 
 
 def read_wav(path: str) -> AudioClip:
-    with wave.open(path, "rb") as wav_file:
-        channels = wav_file.getnchannels()
-        sample_rate = wav_file.getframerate()
-        sample_width = wav_file.getsampwidth()
-        frame_count = wav_file.getnframes()
-        raw = wav_file.readframes(frame_count)
+    with open(path, "rb") as input_file:
+        raw = input_file.read()
 
-    if sample_width not in (1, 2):
+    if len(raw) < 12:
+        raise ValueError("WAV ファイルとして短すぎます")
+    if raw[0:4] != b"RIFF" or raw[8:12] != b"WAVE":
+        raise ValueError("RIFF/WAVE ヘッダが見つかりません")
+
+    fmt_chunk = None
+    data_chunk = None
+    offset = 12
+
+    while offset + 8 <= len(raw):
+        chunk_id = raw[offset : offset + 4]
+        chunk_size = _read_u32_le(raw, offset + 4)
+        chunk_start = offset + 8
+        chunk_end = chunk_start + chunk_size
+        if chunk_end > len(raw):
+            raise ValueError("チャンクサイズがファイル末尾を超えています")
+
+        chunk_payload = raw[chunk_start:chunk_end]
+        if chunk_id == b"fmt " and fmt_chunk is None:
+            fmt_chunk = chunk_payload
+        elif chunk_id == b"data" and data_chunk is None:
+            data_chunk = chunk_payload
+
+        offset = chunk_end + (chunk_size % 2)
+
+    if fmt_chunk is None or data_chunk is None:
+        raise ValueError("fmt または data チャンクが見つかりません")
+    if len(fmt_chunk) < 16:
+        raise ValueError("fmt チャンクが短すぎます")
+
+    audio_format = _read_u16_le(fmt_chunk, 0)
+    channels = _read_u16_le(fmt_chunk, 2)
+    sample_rate = _read_u32_le(fmt_chunk, 4)
+    block_align = _read_u16_le(fmt_chunk, 12)
+    bit_depth = _read_u16_le(fmt_chunk, 14)
+
+    if audio_format != 1:
+        raise ValueError("PCM 以外の WAV には対応していません")
+    if bit_depth not in (8, 16):
         raise ValueError("対応している WAV は 8bit / 16bit PCM のみです")
+    if channels <= 0 or sample_rate <= 0:
+        raise ValueError("WAV ヘッダのチャンネル数またはサンプルレートが不正です")
 
+    bytes_per_sample = bit_depth // 8
+    expected_block_align = channels * bytes_per_sample
+    if block_align != expected_block_align:
+        raise ValueError("block_align が PCM 情報と一致しません")
+    if len(data_chunk) % block_align != 0:
+        raise ValueError("data チャンク長がフレーム境界に揃っていません")
+
+    frame_count = len(data_chunk) // block_align
     channel_data = [[] for _ in range(channels)]
 
-    if sample_width == 1:
-        for index, byte_value in enumerate(raw):
+    if bit_depth == 8:
+        for index, byte_value in enumerate(data_chunk):
             channel = index % channels
             channel_data[channel].append(clamp_sample((byte_value / 127.5) - 1.0))
     else:
         sample_total = frame_count * channels
-        values = struct.unpack("<{0}h".format(sample_total), raw)
-        for index, sample in enumerate(values):
-            channel = index % channels
+        for sample_index in range(sample_total):
+            byte_offset = sample_index * 2
+            sample = _read_i16_le(data_chunk, byte_offset)
+            channel = sample_index % channels
             channel_data[channel].append(clamp_sample(sample / 32768.0))
 
     return AudioClip(sample_rate=sample_rate, channels=channels, samples=channel_data)
@@ -126,18 +207,42 @@ def write_wav(path: str, clip: AudioClip, bit_depth: int = 16) -> None:
                 pcm.append(max(0, min(255, code)))
         payload = bytes(pcm)
     else:
-        values = []
+        pcm = bytearray()
         for frame_index in range(clip.frame_count):
             for channel_index in range(clip.channels):
                 sample = clamp_sample(clip.samples[channel_index][frame_index])
                 if sample <= -1.0:
-                    values.append(-32768)
+                    value = -32768
                 else:
-                    values.append(int(round(sample * 32767.0)))
-        payload = struct.pack("<{0}h".format(len(values)), *values)
+                    value = int(round(sample * 32767.0))
+                _append_i16_le(pcm, value)
+        payload = bytes(pcm)
 
-    with wave.open(path, "wb") as wav_file:
-        wav_file.setnchannels(clip.channels)
-        wav_file.setsampwidth(1 if bit_depth == 8 else 2)
-        wav_file.setframerate(clip.sample_rate)
-        wav_file.writeframes(payload)
+    bytes_per_sample = 1 if bit_depth == 8 else 2
+    block_align = clip.channels * bytes_per_sample
+    byte_rate = clip.sample_rate * block_align
+    payload_padding = len(payload) % 2
+    riff_size = 4 + (8 + 16) + (8 + len(payload)) + payload_padding
+
+    output = bytearray()
+    output.extend(b"RIFF")
+    _append_u32_le(output, riff_size)
+    output.extend(b"WAVE")
+
+    output.extend(b"fmt ")
+    _append_u32_le(output, 16)
+    _append_u16_le(output, 1)
+    _append_u16_le(output, clip.channels)
+    _append_u32_le(output, clip.sample_rate)
+    _append_u32_le(output, byte_rate)
+    _append_u16_le(output, block_align)
+    _append_u16_le(output, bit_depth)
+
+    output.extend(b"data")
+    _append_u32_le(output, len(payload))
+    output.extend(payload)
+    if payload_padding:
+        output.append(0)
+
+    with open(path, "wb") as output_file:
+        output_file.write(output)
