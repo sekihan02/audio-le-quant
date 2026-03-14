@@ -1,13 +1,40 @@
 from __future__ import annotations
 
-import math
-import random
 from dataclasses import dataclass
 from typing import List
+
+PI = 3.141592653589793
+TAU = PI * 2.0
+HALF_PI = PI * 0.5
 
 
 def clamp_sample(value: float) -> float:
     return max(-1.0, min(1.0, value))
+
+
+def _sin_approx(angle: float) -> float:
+    angle = ((angle + PI) % TAU) - PI
+    if angle > HALF_PI:
+        angle = PI - angle
+    elif angle < -HALF_PI:
+        angle = -PI - angle
+
+    squared = angle * angle
+    return angle * (
+        1.0
+        - (squared / 6.0)
+        + (squared * squared / 120.0)
+        - (squared * squared * squared / 5040.0)
+        + (squared * squared * squared * squared / 362880.0)
+    )
+
+
+def _next_noise_state(state: int) -> int:
+    return (1103515245 * state + 12345) & 0x7FFFFFFF
+
+
+def _noise_from_state(state: int) -> float:
+    return (state / 1073741823.5) - 1.0
 
 
 def _read_u16_le(buffer: bytes, offset: int) -> int:
@@ -98,20 +125,23 @@ def generate_signal(
 ) -> AudioClip:
     frame_count = max(1, int(duration_seconds * sample_rate))
     amplitude = clamp_sample(amplitude)
-    rng = random.Random(seed)
+    noise_state = seed & 0x7FFFFFFF
+    if noise_state == 0:
+        noise_state = 1
     channel_data = [[] for _ in range(channels)]
 
     for frame_index in range(frame_count):
         time_position = frame_index / float(sample_rate)
         if waveform == "sine":
-            value = math.sin(2.0 * math.pi * frequency * time_position)
+            value = _sin_approx(TAU * frequency * time_position)
         elif waveform == "square":
-            value = 1.0 if math.sin(2.0 * math.pi * frequency * time_position) >= 0.0 else -1.0
+            value = 1.0 if _sin_approx(TAU * frequency * time_position) >= 0.0 else -1.0
         elif waveform == "saw":
             cycle = (time_position * frequency) % 1.0
             value = (2.0 * cycle) - 1.0
         elif waveform == "noise":
-            value = rng.uniform(-1.0, 1.0)
+            noise_state = _next_noise_state(noise_state)
+            value = _noise_from_state(noise_state)
         else:
             raise ValueError("unsupported waveform: {0}".format(waveform))
 

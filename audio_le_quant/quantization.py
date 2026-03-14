@@ -1,10 +1,65 @@
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 from typing import Dict, List
 
 from .audio import AudioClip, clamp_sample
+
+LN2 = 0.6931471805599453
+LN10 = 2.302585092994046
+
+
+def _sqrt(value: float) -> float:
+    if value < 0.0:
+        raise ValueError("square root domain error")
+    if value == 0.0:
+        return 0.0
+
+    guess = value if value >= 1.0 else 1.0
+    for _ in range(12):
+        guess = 0.5 * (guess + (value / guess))
+    return guess
+
+
+def _ln(value: float) -> float:
+    if value <= 0.0:
+        raise ValueError("natural log domain error")
+
+    shifts = 0
+    while value > 1.5:
+        value *= 0.5
+        shifts += 1
+    while value < 0.75:
+        value *= 2.0
+        shifts -= 1
+
+    y = (value - 1.0) / (value + 1.0)
+    y_squared = y * y
+    term = y
+    denominator = 1.0
+    series = 0.0
+
+    for _ in range(14):
+        series += term / denominator
+        term *= y_squared
+        denominator += 2.0
+
+    return (2.0 * series) + (shifts * LN2)
+
+
+def _log10(value: float) -> float:
+    return _ln(value) / LN10
+
+
+def _copy_sign(magnitude: float, sign_source: float) -> float:
+    magnitude = abs(magnitude)
+    if sign_source < 0.0:
+        return -magnitude
+    return magnitude
+
+
+def _is_infinite(value: float) -> bool:
+    return value == float("inf") or value == float("-inf")
 
 
 @dataclass
@@ -33,7 +88,7 @@ class QuantizedPayload:
 
     @property
     def payload_bytes(self) -> int:
-        return int(math.ceil((self.sample_count * self.bit_depth) / 8.0))
+        return (self.sample_count * self.bit_depth + 7) // 8
 
 
 def linear_quantize(clip: AudioClip, bit_depth: int) -> QuantizedPayload:
@@ -102,8 +157,8 @@ def mu_law_encode_sample(sample: float, mu: int = 255) -> int:
     sample = clamp_sample(sample)
     if mu <= 0:
         raise ValueError("mu must be positive")
-    magnitude = math.log1p(mu * abs(sample)) / math.log1p(mu)
-    companded = math.copysign(magnitude, sample)
+    magnitude = _ln(1.0 + (mu * abs(sample))) / _ln(1.0 + mu)
+    companded = _copy_sign(magnitude, sample)
     code = int(round((companded + 1.0) * 127.5))
     return max(0, min(255, code))
 
@@ -113,7 +168,7 @@ def mu_law_decode_sample(code: int, mu: int = 255) -> float:
         raise ValueError("mu must be positive")
     companded = (code / 127.5) - 1.0
     magnitude = ((1.0 + mu) ** abs(companded) - 1.0) / float(mu)
-    return clamp_sample(math.copysign(magnitude, companded))
+    return clamp_sample(_copy_sign(magnitude, companded))
 
 
 def mu_law_quantize(clip: AudioClip, mu: int = 255) -> QuantizedPayload:
@@ -172,7 +227,7 @@ def decode_mu_law_codes(
 
 
 def estimate_pcm_bytes(clip: AudioClip, bit_depth: int = 16) -> int:
-    return int(math.ceil((clip.frame_count * clip.channels * bit_depth) / 8.0))
+    return (clip.frame_count * clip.channels * bit_depth + 7) // 8
 
 
 def calculate_metrics(original: AudioClip, processed: AudioClip) -> AudioMetrics:
@@ -200,14 +255,14 @@ def calculate_metrics(original: AudioClip, processed: AudioClip) -> AudioMetrics
             peak_error = max(peak_error, abs(error))
 
     mse = noise_power / float(sample_total)
-    rmse = math.sqrt(mse)
+    rmse = _sqrt(mse)
     mean_abs_error = sum_abs_error / float(sample_total)
     if noise_power == 0.0:
         snr_db = float("inf")
     elif signal_power == 0.0:
         snr_db = 0.0
     else:
-        snr_db = 10.0 * math.log10(signal_power / noise_power)
+        snr_db = 10.0 * _log10(signal_power / noise_power)
 
     return AudioMetrics(
         mse=mse,
@@ -237,7 +292,7 @@ def build_learning_summary(
     else:
         mode_line = "μ-law は小さい音の近くに細かい精度を残し、大きい音は粗く表します。"
 
-    snr_line = "無限大" if math.isinf(metrics.snr_db) else "{0:.2f} dB".format(metrics.snr_db)
+    snr_line = "無限大" if _is_infinite(metrics.snr_db) else "{0:.2f} dB".format(metrics.snr_db)
 
     return "\n".join(
         [

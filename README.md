@@ -63,5 +63,5 @@ QT_QPA_PLATFORM=offscreen AUDIO_LE_QUANT_AUTOCLOSE_MS=200 python3 main.py
 ## 補足
 
 - 画面表示には `PySide6` が必要です。
-- コア処理はあえて `numpy` や `wave`、`struct` に頼らず、生のサンプル列やバイト列を自前で処理しています。
+- コア処理はあえて `numpy`、`math`、`random`、`wave`、`struct` に頼らず、生のサンプル列やバイト列を自前で処理しています。
 - `.alq` は学習用の独自形式であり、実用コーデックではありません。
