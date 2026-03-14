@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+*.pyo
+*.wav
+*.alq
+/.pytest_cache/
+.venv/
+vendor/debs/
