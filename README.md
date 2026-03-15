@@ -1,6 +1,8 @@
 # audio-le-quant
 
-`audio-le-quant` は、量子化を体感的に学ぶための PySide6 アプリです。  
+[![CI](https://github.com/sekihan02/audio-le-quant/actions/workflows/ci.yml/badge.svg)](https://github.com/sekihan02/audio-le-quant/actions/workflows/ci.yml)
+
+`audio-le-quant` は、量子化を体感的に学ぶための PySide6 アプリです。
 単純な PCM 波形を生成するか WAV を読み込み、線形量子化や μ-law を適用して、元の波形、復元後の波形、誤差波形、保存サイズの違いを見比べられます。さらに、学習用の独自形式 `.alq` に保存し、あとから復元し直すこともできます。
 
 このプロジェクトでは、量子化処理だけでなく、WAV の RIFF ヘッダ処理と `.alq` のヘッダ処理もライブラリ任せにせず手書きで実装しています。GUI は PySide6 を使いますが、音声フォーマットの中核ロジックはスクラッチ実装です。
@@ -23,18 +25,24 @@
 - `.alq` の保存と再読み込み
 - QtMultimedia が利用可能なら簡易再生
 
+## 必要環境
+
+- Python 3.11 以上を推奨
+- `PySide6`
+
 ## 起動方法
 
-1. 依存関係を入れます。
+依存関係を入れてからアプリを起動します。
 
 ```bash
 python3 -m pip install --user -r requirements.txt
+python3 main.py
 ```
 
-2. アプリを起動します。
+オフスクリーンの簡易起動確認もできます。
 
 ```bash
-python3 main.py
+QT_QPA_PLATFORM=offscreen AUDIO_LE_QUANT_AUTOCLOSE_MS=200 python3 main.py
 ```
 
 ## テスト
@@ -45,10 +53,18 @@ python3 main.py
 python3 -m unittest discover -s tests
 ```
 
-オフスクリーンの簡易起動確認もできます。
+## GitHub Actions
+
+このリポジトリには次のワークフローを入れています。
+
+- `CI`: `push` / `pull_request` / 手動実行で、`unittest` とオフスクリーン起動確認を実行
+- `Release`: `v*` タグの push で GitHub Release を自動作成し、ソース ZIP を添付
+
+リリースを作るときは、たとえば次のようにタグを push します。
 
 ```bash
-QT_QPA_PLATFORM=offscreen AUDIO_LE_QUANT_AUTOCLOSE_MS=200 python3 main.py
+git tag v0.1.0
+git push origin v0.1.0
 ```
 
 ## 構成
